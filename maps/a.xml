@@ -1,0 +1,15 @@
+<mujoco>
+    <worldbody>
+        <light name="light" pos="0 0 2"/>
+
+        <!-- 定义地面 -->
+        <geom name="floor" type="plane" size="10 10 0.1" pos="0 0 0" rgba="0.8 0.9 0.8 1"/>
+        
+        <!-- 定义飞行器 -->
+        <body name="drone" pos="0 0 1">
+            <geom name="drone_geom" type="sphere" size="0.1" rgba="0.9 0.1 0.1 1"/>
+            <joint type="free" name="free_joint"/>
+        </body>
+        
+    </worldbody>
+</mujoco>
