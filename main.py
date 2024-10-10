@@ -81,7 +81,7 @@ def q_learning_train(env, episodes=2000, alpha=0.1, gamma=0.95, epsilon=1.0, eps
         state, _ = env.reset()
         done = False
         success = 0
-        
+        print("episode:",episode)
         while not done:
             if np.random.rand() < epsilon:
                 action = env.action_space.sample()
@@ -103,11 +103,11 @@ def q_learning_train(env, episodes=2000, alpha=0.1, gamma=0.95, epsilon=1.0, eps
     plt.ylabel('Success Rate')
     plt.show()
     
-    with open("q_table.pkl", "wb") as f:
+    with open("./q_table.pkl", "wb") as f:
         pickle.dump(q_table, f)
 
 def q_learning_visualize(env):
-    with open("q_table.pkl", "rb") as f:
+    with open("./q_table.pkl", "rb") as f:
         q_table = pickle.load(f)
     
     state, _ = env.reset()
