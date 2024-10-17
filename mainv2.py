@@ -6,14 +6,14 @@ from gymnasium import spaces
 import pickle
 
 class UAV3DEnv(gym.Env):
-    def __init__(self, grid_size=(11, 20, 11), goal_position=(10, 19, 10), uav_radius=0.5, obstacle_radius=0.5):
+    def __init__(self, grid_size=(11, 40, 11), goal_position=(5, 39, 5), uav_radius=0.5, obstacle_radius=0.5):
         super().__init__()
         self.grid_size = grid_size
         self.uav_radius = uav_radius
         self.obstacle_radius = obstacle_radius
         
         self.observation_space = spaces.Box(low=0, high=max(grid_size), shape=(3,), dtype=np.int32)
-        self.action_space = spaces.Discrete(6)
+        self.action_space = spaces.Discrete(5)
 
         self.state = np.array([0, 0, 0], dtype=np.int32)
         self.goal_position = np.array(goal_position, dtype=np.int32)
@@ -22,37 +22,55 @@ class UAV3DEnv(gym.Env):
     def _generate_obstacles(self):
         obstacles = set()
         while len(obstacles) < 20:
-            obstacle = tuple(np.random.randint(0, max(self.grid_size), size=3))
+            obstacle = tuple(np.random.randint(0, [self.grid_size[0], self.grid_size[1], self.grid_size[2]]))
             if obstacle != tuple(self.state) and obstacle != tuple(self.goal_position):
                 obstacles.add(obstacle)
         return list(obstacles)
-    
+
     def reset(self):
         self.state = np.array([0, 0, 0], dtype=np.int32)
         self.obstacles = self._generate_obstacles()
+        self.previous_states = [self.state.copy()] * 7  # Initialize the last 7 positions
         return self.state, {}
 
     def step(self, action):
-        moves = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]])
+        moves = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]])
         new_state = self.state + moves[action]
         
-        # 检查是否越界
+        # Check for boundary crossing
         if np.any(new_state < 0) or np.any(new_state >= np.array(self.grid_size)):
-            reward = -10  # 惩罚试图越界
+            reward = -50  # Penalty for trying to cross the boundary
             terminated = False
-            new_state = self.state  # 保持在当前状态
+            new_state = self.state  # Stay in the current state
         else:
             self.state = new_state
-            reward = -1
+            reward = -2
             terminated = False
             if tuple(self.state) in self.obstacles:
-                reward = -5  # 更小的惩罚
-                terminated = False  # 允许继续尝试选择新的动作
+                reward = -30  # Lesser penalty
+                terminated = True  # Allows continued attempt to select new action
             elif np.array_equal(self.state, self.goal_position):
                 reward = 100
                 terminated = True
 
+        distance_to_goal = np.linalg.norm(self.state - self.goal_position)
+        if np.linalg.norm(new_state - self.goal_position) < distance_to_goal:
+            reward += 5  # Additional reward for moving towards the goal
+        # Update the last 7 positions
+        self.previous_states.pop(0)
+        self.previous_states.append(self.state.copy())
+
+        # Check for hovering in place
+        if self._is_hovering():
+            reward = -10  # Extra penalty
+
         return self.state, reward, terminated, False, {}
+
+    def _is_hovering(self):
+        # Check if the last 7 positions are within a small range
+        recent_positions = np.array(self.previous_states)
+        max_distance = np.max(np.ptp(recent_positions, axis=0))
+        return max_distance < 4  # Considered hovering if the maximum distance is less than 4
     def render(self):
         plt.clf()
         ax = plt.subplot(111, projection='3d')
@@ -62,8 +80,16 @@ class UAV3DEnv(gym.Env):
         for obs in self.obstacles:
             self._draw_sphere(ax, obs, self.obstacle_radius, 'red')
 
-        ax.set(xlim=(0, self.grid_size[0]), ylim=(0, self.grid_size[1]), zlim=(0, self.grid_size[2]),
-               xlabel='X', ylabel='Y', zlabel='Z')
+        # Set axis ranges to fit the grid size
+        ax.set_xlim(0, self.grid_size[0])
+        ax.set_ylim(0, self.grid_size[1])
+        ax.set_zlim(0, self.grid_size[2])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+
+        # Set the image scale to fit the grid size
+        ax.set_box_aspect([self.grid_size[0], self.grid_size[1], self.grid_size[2]])
         plt.pause(0.1)
 
     def _draw_sphere(self, ax, center, radius, color, label=None):
@@ -73,7 +99,7 @@ class UAV3DEnv(gym.Env):
         z = center[2] + radius * np.cos(v)
         ax.plot_surface(x, y, z, color=color, alpha=0.3, label=label)
 
-def q_learning_train(env, episodes=2000, alpha=0.1, gamma=0.95, epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.995):
+def q_learning_train(env, episodes=5000, alpha=0.25, gamma=0.85, epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.995):
     q_table = np.zeros((*env.grid_size, env.action_space.n))
     success_rate = []
     
@@ -81,7 +107,7 @@ def q_learning_train(env, episodes=2000, alpha=0.1, gamma=0.95, epsilon=1.0, eps
         state, _ = env.reset()
         done = False
         success = 0
-        print("episode:",episode)
+        print("Episode:", episode)
         while not done:
             if np.random.rand() < epsilon:
                 action = env.action_space.sample()
@@ -121,10 +147,10 @@ def q_learning_visualize(env):
 
 env = UAV3DEnv()
 
-# 训练模式
+# Training mode
 q_learning_train(env)
 
-# 可视化模式
+# Visualization mode
 plt.ion()
 q_learning_visualize(env)
 plt.ioff()
