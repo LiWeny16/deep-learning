@@ -22,6 +22,7 @@ class UAV3DEnv(gym.Env):
 
     def _generate_obstacles(self):
         obstacles = {
+            # Define obstacles as a set of coordinates
             (2, 10, 0), (2, 11, 0), (2, 12, 0), (2, 10, 1), (2, 11, 1), (2, 12, 1),
             (2, 10, 2), (2, 11, 2), (2, 12, 2), (2, 10, 3), (2, 11, 3), (2, 12, 3),
             (8, 10, 0), (8, 11, 0), (8, 12, 0), (8, 10, 1), (8, 11, 1), (8, 12, 1),
@@ -49,22 +50,20 @@ class UAV3DEnv(gym.Env):
         ])
         new_state = self.state + moves[action]
         terminated = False
+        reward = -1  # Base reward for each step
 
         # Check for out-of-bounds
         if np.any(new_state < 0) or np.any(new_state >= self.grid_size):
-            reward = -50
+            reward = -10  # Penalty for hitting the wall
             new_state = self.state.copy()
         else:
             self.state = new_state.copy()
             if tuple(self.state) in self.obstacles:
-                reward = -100
+                reward = -100  # Large penalty for hitting an obstacle
                 terminated = True
             elif np.array_equal(self.state, self.goal_position):
-                reward = 500
+                reward = 100  # Large reward for reaching the goal
                 terminated = True
-            else:
-                # Negative Manhattan distance to the goal
-                reward = -np.sum(np.abs(self.state - self.goal_position))
 
         # Update previous states and history
         self.previous_states.pop(0)
@@ -73,7 +72,7 @@ class UAV3DEnv(gym.Env):
 
         # Additional penalty for hovering
         if self._is_hovering():
-            reward -= 30
+            reward -= 5
 
         return self.state.copy(), reward, terminated, False, {}
 
@@ -122,6 +121,7 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+# Define the Dueling DQN with Double DQN
 class DuelingDQN(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(DuelingDQN, self).__init__()
@@ -144,27 +144,12 @@ class DuelingDQN(nn.Module):
         x = self.feature(x)
         value = self.value_stream(x)
         advantage = self.advantage_stream(x)
-        q_values = value + advantage - advantage.mean()
+        q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
         return q_values
 
-# Define the Neural Network Model
-class DQN(nn.Module):
-    def __init__(self, state_dim, action_dim):
-        super(DQN, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(state_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, action_dim)
-        )
-
-    def forward(self, x):
-        return self.fc(x)
-
-# Deep Q-Learning Algorithm
-def train_dqn(env, num_episodes=1000, batch_size=64, gamma=0.99,
-              epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=500,
+# Deep Q-Learning Algorithm with Double DQN
+def train_dqn(env, num_episodes=500, batch_size=64, gamma=0.99,
+              epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=1000,
               target_update=10, memory_capacity=10000):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state_dim = env.observation_space.shape[0]
@@ -173,16 +158,17 @@ def train_dqn(env, num_episodes=1000, batch_size=64, gamma=0.99,
     policy_net = DuelingDQN(state_dim, action_dim).to(device)
     target_net = DuelingDQN(state_dim, action_dim).to(device)
     target_net.load_state_dict(policy_net.state_dict())
+    target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=1e-3)
+    optimizer = optim.Adam(policy_net.parameters(), lr=1e-4)
     memory = ReplayBuffer(memory_capacity)
 
     steps_done = 0
-    episode_durations = []
+    episode_rewards = []
 
     for episode in range(num_episodes):
         state, _ = env.reset()
-        state = torch.FloatTensor(state).to(device)
+        state = torch.FloatTensor(state).unsqueeze(0).to(device)
         total_reward = 0
         done = False
 
@@ -193,17 +179,20 @@ def train_dqn(env, num_episodes=1000, batch_size=64, gamma=0.99,
 
             # Epsilon-Greedy Action Selection
             if random.random() < epsilon:
-                action = env.action_space.sample()
+                action = random.randrange(action_dim)
             else:
                 with torch.no_grad():
                     q_values = policy_net(state)
-                    action = q_values.max(0)[1].item()
+                    action = q_values.max(1)[1].item()
 
             next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             total_reward += reward
 
-            next_state_tensor = torch.FloatTensor(next_state).to(device)
+            next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
+            reward_tensor = torch.FloatTensor([reward]).to(device)
+            done_tensor = torch.FloatTensor([done]).to(device)
+
             memory.push(state.cpu().numpy(), action, reward, next_state, done)
 
             state = next_state_tensor
@@ -216,12 +205,12 @@ def train_dqn(env, num_episodes=1000, batch_size=64, gamma=0.99,
         if episode % target_update == 0:
             target_net.load_state_dict(policy_net.state_dict())
 
-        episode_durations.append(total_reward)
+        episode_rewards.append(total_reward)
         print(f"Episode {episode+1}/{num_episodes}, Total Reward: {total_reward}, Epsilon: {epsilon:.2f}")
 
     # Plot the training progress
     plt.figure()
-    plt.plot(episode_durations)
+    plt.plot(episode_rewards)
     plt.title('Total Reward per Episode')
     plt.xlabel('Episode')
     plt.ylabel('Total Reward')
@@ -233,19 +222,21 @@ def train_dqn(env, num_episodes=1000, batch_size=64, gamma=0.99,
 def optimize_model(policy_net, target_net, memory, optimizer, batch_size, gamma, device):
     states, actions, rewards, next_states, dones = memory.sample(batch_size)
 
-    states = torch.FloatTensor(states).to(device)
+    states = torch.FloatTensor(states).squeeze().to(device)
     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
     rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
-    next_states = torch.FloatTensor(next_states).to(device)
-    dones = torch.BoolTensor(dones).unsqueeze(1).to(device)
+    next_states = torch.FloatTensor(next_states).squeeze().to(device)
+    dones = torch.FloatTensor(dones).unsqueeze(1).to(device)
 
     # Compute Q(s_t, a)
     q_values = policy_net(states).gather(1, actions)
 
-    # Compute V(s_{t+1}) for all next states
+    # Compute the expected Q values
     with torch.no_grad():
-        next_q_values = target_net(next_states).max(1)[0].unsqueeze(1)
-        expected_q_values = rewards + gamma * next_q_values * (~dones)
+        # Double DQN: select action using policy net and evaluate using target net
+        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
+        next_q_values = target_net(next_states).gather(1, next_actions)
+        expected_q_values = rewards + gamma * next_q_values * (1 - dones)
 
     # Compute loss
     loss = nn.functional.mse_loss(q_values, expected_q_values)
@@ -262,16 +253,17 @@ def visualize_dqn_policy(env):
 
     policy_net = DuelingDQN(state_dim, action_dim).to(device)
     policy_net.load_state_dict(torch.load('dqn_model.pth'))
+    policy_net.eval()
 
     state, _ = env.reset()
-    state = torch.FloatTensor(state).to(device)
+    state = torch.FloatTensor(state).unsqueeze(0).to(device)
     done = False
 
     plt.ion()
     while not done:
         with torch.no_grad():
             q_values = policy_net(state)
-            action = q_values.max(0)[1].item()
+            action = q_values.max(1)[1].item()
 
         next_state, _, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
@@ -279,7 +271,7 @@ def visualize_dqn_policy(env):
         env.render()
         time.sleep(0.1)
 
-        state = torch.FloatTensor(next_state).to(device)
+        state = torch.FloatTensor(next_state).unsqueeze(0).to(device)
 
     plt.ioff()
     plt.show()
